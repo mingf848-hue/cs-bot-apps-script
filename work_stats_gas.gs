@@ -46,7 +46,7 @@ function handleSyncA69Workload(params) {
   var year = parseInt(params.year, 10);
   var month = parseInt(params.month, 10);
   var day = parseInt(params.day, 10);
-  if (year !== 2026 || month !== 11 || day < 1 || day > 30) {
+  if (year !== 2026 || month !== 11 || !day || day < 1 || day > 30) {
     return responseJSON({success: false, msg: "A69 目标表仅对应 2026 年 11 月"});
   }
 
@@ -68,36 +68,64 @@ function handleSyncA69Workload(params) {
   }
   if (!targetColumn) return responseJSON({success: false, msg: "A69 页签未找到 " + day + " 日列"});
 
-  var targetPeople = target.getRange(3, 1, 17, 2).getDisplayValues();
+  var targetPeople = target.getRange(3, 1, Math.max(1, target.getLastRow() - 2), 2).getDisplayValues();
+  var summaryIndex = targetPeople.findIndex(function(person) {
+    return person[0].trim() === "汇总";
+  });
+  if (summaryIndex < 0) return responseJSON({success: false, msg: "A69 未找到人员区下方的汇总行"});
+  targetPeople = targetPeople.slice(0, summaryIndex);
   var sourceRows = [3, 24, 45];
   var sections = sourceRows.map(function(start) {
-    return {
-      people: source.getRange(start, 2, 17, 2).getDisplayValues(),
-      counts: source.getRange(start, sourceColumn, 17, 1).getValues()
-    };
+    var people = source.getRange(start, 2, 17, 2).getDisplayValues();
+    var counts = source.getRange(start, sourceColumn, 17, 1).getValues();
+    var byEmployeeId = Object.create(null);
+    people.forEach(function(person, i) {
+      var id = person[1].trim();
+      if (id) {
+        byEmployeeId[id] = Object.prototype.hasOwnProperty.call(byEmployeeId, id)
+          ? null
+          : {name: person[0].trim().toUpperCase(), count: counts[i][0], row: start + i};
+      }
+    });
+    return byEmployeeId;
   });
-  var totals = [];
+  var batches = [];
+  var seen = Object.create(null);
+  var updated = 0;
   for (var i = 0; i < targetPeople.length; i++) {
-    var name = String(targetPeople[i][0] || "").trim().toUpperCase();
-    var employeeId = String(targetPeople[i][1] || "").trim();
-    if (!name || !employeeId) return responseJSON({success: false, msg: "A69 第 " + (i + 3) + " 行缺少姓名或工号"});
+    var row = i + 3;
+    var name = targetPeople[i][0].trim().toUpperCase();
+    var employeeId = targetPeople[i][1].trim();
+    if (!name && !employeeId) continue;
+    if (!name || !employeeId || seen[employeeId]) {
+      return responseJSON({success: false, msg: "A69 第 " + row + " 行缺少姓名、工号或工号重复"});
+    }
+    seen[employeeId] = true;
     var total = 0;
     for (var j = 0; j < sections.length; j++) {
-      var person = sections[j].people[i];
-      if (String(person[0] || "").trim().toUpperCase() !== name ||
-          String(person[1] || "").trim() !== employeeId) {
-        return responseJSON({success: false, msg: "A69 第 " + (i + 3) + " 行与来源表第 " + (sourceRows[j] + i) + " 行人员不一致"});
+      var person = sections[j][employeeId];
+      if (!person || person.name !== name) {
+        return responseJSON({success: false, msg: "A69 第 " + row + " 行工号 " + employeeId + " 在来源表第 " + (j + 1) + " 分区找不到唯一且姓名一致的记录"});
       }
-      var count = sections[j].counts[i][0];
+      var count = person.count;
       if (count !== "" && (typeof count !== "number" || !isFinite(count))) {
-        return responseJSON({success: false, msg: "来源表第 " + (sourceRows[j] + i) + " 行工作量不是数字"});
+        return responseJSON({success: false, msg: "来源表第 " + person.row + " 行工作量不是数字"});
       }
       total += count === "" ? 0 : count;
     }
-    totals.push([total]);
+    var batch = batches[batches.length - 1];
+    if (!batch || batch.row + batch.values.length !== row) {
+      batch = {row: row, values: []};
+      batches.push(batch);
+    }
+    batch.values.push([total]);
+    updated++;
   }
-  target.getRange(3, targetColumn, totals.length, 1).setValues(totals);
-  return responseJSON({success: true, msg: "A69 " + month + " 月 " + day + " 日已更新 " + totals.length + " 人"});
+  if (!updated) return responseJSON({success: false, msg: "A69 没有可同步的人员"});
+  batches.forEach(function(batch) {
+    target.getRange(batch.row, targetColumn, batch.values.length, 1).setValues(batch.values);
+  });
+  return responseJSON({success: true, msg: "A69 " + month + " 月 " + day + " 日已更新 " + updated + " 人"});
 }
 
 function getSmartSheetInfo(dayInput, monthInput, yearInput) {
