@@ -74,6 +74,24 @@ function handleSyncA69Workload(params) {
   });
   if (summaryIndex < 0) return responseJSON({success: false, msg: "A69 未找到人员区下方的汇总行"});
   targetPeople = targetPeople.slice(0, summaryIndex);
+  var roster = source.getParent().getSheetByName("26年11月迪拜班表（更改务必先来信组长）");
+  if (!roster || roster.getLastRow() < 10) return responseJSON({success: false, msg: "找不到 A69 对应的 11 月班表"});
+  // 从班表第 9 行找日期，工号在 D 列，姓名在 E 列。
+  var rosterDates = roster.getRange(9, 7, 1, 30).getDisplayValues()[0];
+  var rosterColumn = rosterDates.findIndex(function(label) {
+    return label.trim() === month + "/" + day;
+  });
+  if (rosterColumn < 0) return responseJSON({success: false, msg: "11 月班表找不到 " + day + " 日"});
+  var rosterRows = roster.getRange(10, 4, roster.getLastRow() - 9, rosterColumn + 4).getDisplayValues();
+  var shifts = Object.create(null);
+  rosterRows.forEach(function(person) {
+    var id = person[0].trim();
+    var shift = person[rosterColumn + 3].trim();
+    if (!id || !shift) return;
+    shifts[id] = Object.prototype.hasOwnProperty.call(shifts, id)
+      ? null
+      : {name: person[1].trim().toUpperCase(), code: shift};
+  });
   var sourceRows = [3, 24, 45];
   var sections = sourceRows.map(function(start) {
     var people = source.getRange(start, 2, 17, 2).getDisplayValues();
@@ -101,6 +119,10 @@ function handleSyncA69Workload(params) {
       return responseJSON({success: false, msg: "A69 第 " + row + " 行缺少姓名、工号或工号重复"});
     }
     seen[employeeId] = true;
+    var shift = shifts[employeeId];
+    if (!shift || shift.name !== name) {
+      return responseJSON({success: false, msg: "A69 第 " + row + " 行工号 " + employeeId + " 在班表中找不到唯一且姓名一致的排班"});
+    }
     var total = 0;
     for (var j = 0; j < sections.length; j++) {
       var person = sections[j][employeeId];
@@ -118,7 +140,7 @@ function handleSyncA69Workload(params) {
       batch = {row: row, values: []};
       batches.push(batch);
     }
-    batch.values.push([total]);
+    batch.values.push([shift.code === "▲" ? "休息" : total]);
     updated++;
   }
   if (!updated) return responseJSON({success: false, msg: "A69 没有可同步的人员"});
