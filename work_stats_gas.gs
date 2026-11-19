@@ -154,7 +154,7 @@ function handleSyncA69Workload(params) {
       batch = {row: row, values: []};
       batches.push(batch);
     }
-    batch.values.push([shift.code === "▲" ? "休息" : total]);
+    batch.values.push([shift.code === "▲" && total === 0 ? "休息" : total]);
     updated++;
   }
   if (!updated) return responseJSON({success: false, msg: "A69 没有可同步的人员"});
