@@ -75,22 +75,36 @@ function handleSyncA69Workload(params) {
   if (summaryIndex < 0) return responseJSON({success: false, msg: "A69 未找到人员区下方的汇总行"});
   targetPeople = targetPeople.slice(0, summaryIndex);
   var roster = source.getParent().getSheetByName("26年11月迪拜班表（更改务必先来信组长）");
-  if (!roster || roster.getLastRow() < 10) return responseJSON({success: false, msg: "找不到 A69 对应的 11 月班表"});
-  // 从班表第 9 行找日期，工号在 D 列，姓名在 E 列。
-  var rosterDates = roster.getRange(9, 7, 1, 30).getDisplayValues()[0];
-  var rosterColumn = rosterDates.findIndex(function(label) {
-    return label.trim() === month + "/" + day;
+  if (!roster) return responseJSON({success: false, msg: "找不到 A69 对应的 11 月班表"});
+  var rosterRows = roster.getDataRange().getDisplayValues();
+  var rosterHeader = rosterRows.findIndex(function(row) {
+    var labels = row.map(function(label) { return label.trim(); });
+    return labels.indexOf("工号") !== -1 && labels.indexOf("姓名") !== -1;
   });
-  if (rosterColumn < 0) return responseJSON({success: false, msg: "11 月班表找不到 " + day + " 日"});
-  var rosterRows = roster.getRange(10, 4, roster.getLastRow() - 9, rosterColumn + 4).getDisplayValues();
+  if (rosterHeader < 0) return responseJSON({success: false, msg: "11 月班表找不到工号和姓名表头"});
+  var headers = rosterRows[rosterHeader].map(function(label) { return label.trim(); });
+  var idColumn = headers.indexOf("工号");
+  var nameColumn = headers.indexOf("姓名");
+  if (idColumn !== headers.lastIndexOf("工号") || nameColumn !== headers.lastIndexOf("姓名")) {
+    return responseJSON({success: false, msg: "11 月班表的工号或姓名表头重复"});
+  }
+  var dateColumns = [];
+  headers.forEach(function(label, index) {
+    var date = label.match(/^(?:(\d{4})[\/.-])?(\d{1,2})(?:[\/.-]|月)(\d{1,2})日?$/);
+    if (date && (!date[1] || Number(date[1]) === year) && Number(date[2]) === month && Number(date[3]) === day) {
+      dateColumns.push(index);
+    }
+  });
+  if (dateColumns.length !== 1) return responseJSON({success: false, msg: "11 月班表找不到唯一的 " + day + " 日列"});
+  var rosterColumn = dateColumns[0];
   var shifts = Object.create(null);
-  rosterRows.forEach(function(person) {
-    var id = person[0].trim();
-    var shift = person[rosterColumn + 3].trim();
+  rosterRows.slice(rosterHeader + 1).forEach(function(person) {
+    var id = person[idColumn].trim();
+    var shift = person[rosterColumn].trim();
     if (!id || !shift) return;
     shifts[id] = Object.prototype.hasOwnProperty.call(shifts, id)
       ? null
-      : {name: person[1].trim().toUpperCase(), code: shift};
+      : {name: person[nameColumn].trim().toUpperCase(), code: shift};
   });
   var sourceRows = [3, 24, 45];
   var sections = sourceRows.map(function(start) {
