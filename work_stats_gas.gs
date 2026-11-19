@@ -151,17 +151,79 @@ function handleSyncA69Workload(params) {
     }
     var batch = batches[batches.length - 1];
     if (!batch || batch.row + batch.values.length !== row) {
-      batch = {row: row, values: []};
+      batch = {row: row, values: [], employeeIds: []};
       batches.push(batch);
     }
     batch.values.push([shift.code === "▲" && total === 0 ? "休息" : total]);
+    batch.employeeIds.push(employeeId);
     updated++;
   }
   if (!updated) return responseJSON({success: false, msg: "A69 没有可同步的人员"});
   batches.forEach(function(batch) {
     target.getRange(batch.row, targetColumn, batch.values.length, 1).setValues(batch.values);
   });
-  return responseJSON({success: true, msg: "A69 " + month + " 月 " + day + " 日已更新 " + updated + " 人"});
+  var workloadMsg = "A69 " + month + " 月 " + day + " 日工作量已更新 " + updated + " 人";
+  try {
+    syncA69QualityDeductions(target, batches, year, month, targetColumn);
+  } catch (err) {
+    return responseJSON({success: false, msg: workloadMsg + "；质检扣分同步失败：" + err.message});
+  }
+  return responseJSON({success: true, msg: workloadMsg + "，本月质检扣分已更新"});
+}
+
+function syncA69QualityDeductions(target, batches, year, month, workloadColumn) {
+  var targetHeaders = target.getRange(1, 1, 1, target.getLastColumn()).getDisplayValues()[0];
+  var targetColumn = requireQualityHeader(targetHeaders, "质检扣分", "A69") + 1;
+  if (targetColumn === workloadColumn) throw new Error("A69 质检扣分列与当天工作量列重叠");
+  var workbook = SpreadsheetApp.openById("1zF8gYA92iwXw5KlkngP01qmRJr01Mtp5u6w40gr-5F0");
+  var sheet = workbook.getSheets().find(function(tab) { return tab.getSheetId() === 739407102; });
+  if (!sheet) throw new Error("找不到指定的工作质检页签");
+
+  var range = sheet.getDataRange();
+  var raw = range.getValues();
+  var displayed = range.getDisplayValues();
+  var dateColumn = requireQualityHeader(displayed[0], "检查日期", "工作质检");
+  var employeeColumn = requireQualityHeader(displayed[0], "工号", "工作质检");
+  var scoreColumn = requireQualityHeader(displayed[0], "扣分值", "工作质检");
+  var totals = Object.create(null);
+  batches.forEach(function(batch) {
+    batch.employeeIds.forEach(function(id) { totals[id] = 0; });
+  });
+  for (var i = 1; i < raw.length; i++) {
+    var id = displayed[i][employeeColumn].trim();
+    if (!(id in totals)) continue;
+    var date = raw[i][dateColumn];
+    var dateText = date instanceof Date
+      ? Utilities.formatDate(date, workbook.getSpreadsheetTimeZone(), "yyyy-MM-dd")
+      : displayed[i][dateColumn].trim();
+    var dateParts = dateText.match(/^(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})日?(?:\s.*)?$/);
+    if (!dateParts) throw new Error("工作质检第 " + (i + 1) + " 行检查日期无法识别");
+    if (Number(dateParts[1]) !== year || Number(dateParts[2]) !== month) continue;
+    var score = raw[i][scoreColumn];
+    if (typeof score === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(score.trim())) score = Number(score.trim());
+    if (typeof score !== "number" || !isFinite(score)) {
+      throw new Error("工作质检第 " + (i + 1) + " 行扣分值不是数字");
+    }
+    totals[id] += score;
+  }
+
+  var writes = batches.map(function(batch) {
+    var cells = target.getRange(batch.row, targetColumn, batch.employeeIds.length, 1);
+    if (cells.getFormulas().some(function(row) { return row[0] !== ""; })) {
+      throw new Error("A69 质检扣分列已有公式");
+    }
+    return {cells: cells, values: batch.employeeIds.map(function(id) { return [totals[id]]; })};
+  });
+  writes.forEach(function(write) { write.cells.setValues(write.values); });
+}
+
+function requireQualityHeader(headers, name, sheetName) {
+  var labels = headers.map(function(label) { return label.trim(); });
+  var index = labels.indexOf(name);
+  if (index < 0 || index !== labels.lastIndexOf(name)) {
+    throw new Error(sheetName + " 找不到唯一的「" + name + "」表头");
+  }
+  return index;
 }
 
 function getSmartSheetInfo(dayInput, monthInput, yearInput) {
